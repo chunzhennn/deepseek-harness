@@ -71,7 +71,7 @@ function stageDist(): string {
 }
 
 /** A fake webServer capturing the fallback seat and index taps. */
-function fakeHttpServer(host: '127.0.0.1' | '0.0.0.0' = '127.0.0.1'): { server: WebServer; seat: () => unknown } {
+function fakeHttpServer(host = '127.0.0.1'): { server: WebServer; seat: () => unknown } {
   let fallback: unknown
   const server = {
     host,
@@ -206,16 +206,24 @@ describe('web-app runtime glue', () => {
     await ctx.fiber.dispose()
   })
 
-  it('prints the loopback-only URL line when no LAN snapshot exists', async () => {
+  it.each([
+    ['127.0.0.1', '127.0.0.1'],
+    ['localhost', 'localhost'],
+    ['::1', '[::1]'],
+    ['::', '[::1]'],
+    ['0:0:0:0:0:0:0:0', '[::1]'],
+    ['192.168.1.5', '192.168.1.5'],
+    ['2001:db8::1', '[2001:db8::1]'],
+    ['harness.internal', 'harness.internal'],
+  ])('prints a reachable URL for bind host %s', async (host, urlHost) => {
     stageDist()
     const ctx = new Context()
-    ctx.provide('webServer', fakeHttpServer().server)
+    onTestFinished(async () => { await ctx.fiber.dispose() })
+    ctx.provide('webServer', fakeHttpServer(host).server)
     provideConnection(ctx)
     const log = vi.spyOn(console, 'log').mockImplementation(() => {})
     apply(ctx, new Config({ openBrowser: false, printUrl: true, surfaceContext: true, trustedHosts: [] }))
-    await new Promise(resolve => setTimeout(resolve, 0))
-    expect(log).toHaveBeenCalledWith('dsh web: http://127.0.0.1:4567/?token=test-token')
-    await ctx.fiber.dispose()
+    await expect.poll(() => log.mock.calls).toContainEqual([`dsh web: http://${urlHost}:4567/?token=test-token`])
   })
 
   it('does not publish readiness again when Connection reloads', async () => {

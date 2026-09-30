@@ -8,7 +8,7 @@
 
 import { createServer } from 'node:http'
 import type { IncomingMessage, ServerResponse, Server } from 'node:http'
-import type { AddressInfo } from 'node:net'
+import { BlockList, type AddressInfo } from 'node:net'
 import type { Duplex } from 'node:stream'
 import { Context, Service } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
@@ -57,8 +57,8 @@ export interface WebUpgradeRoute {
 
 /** Web server listen and response-compression config. */
 export interface Config {
-  /** Listen host; the two supported values are loopback and all-interfaces. */
-  host: '127.0.0.1' | '0.0.0.0'
+  /** Listen IP address or hostname; non-loopback binds emit a security warning. */
+  host: string
   /** Listen port; zero requests an OS-assigned port. */
   port: number
   /** Response compression for socket-backed HTTP requests. @default 'none' */
@@ -72,6 +72,10 @@ export interface Config {
 const DEFAULT_COMPRESSION = 'none' as const
 const DEFAULT_COMPRESSION_LEVEL = 1
 const DEFAULT_COMPRESSION_THRESHOLD_BYTES = 1024
+
+const loopbackAddresses = new BlockList()
+loopbackAddresses.addSubnet('127.0.0.0', 8, 'ipv4')
+loopbackAddresses.addAddress('::1', 'ipv6')
 
 interface ResolvedConfig extends Config {
   compression: 'none' | 'gzip'
@@ -124,7 +128,7 @@ function createGzipMiddleware(config: ResolvedConfig): NodeMiddleware {
  */
 export class WebServer extends Service {
   static Config: z<Config> = z.object({
-    host: z.union([z.const('127.0.0.1'), z.const('0.0.0.0')]).required(),
+    host: z.string().required(),
     port: z.natural().max(65535).required(),
     compression: z.union([z.const('none'), z.const('gzip')]).default(DEFAULT_COMPRESSION),
     compressionLevel: z.number().step(1).min(0).max(9).default(DEFAULT_COMPRESSION_LEVEL),
@@ -152,7 +156,7 @@ export class WebServer extends Service {
     return this.listenedPort
   }
 
-  /** The configured bind host (the loopback or all-interfaces literal). */
+  /** The configured bind IP address or hostname. */
   get host(): Config['host'] {
     return this.config.host
   }
@@ -313,6 +317,12 @@ export class WebServer extends Service {
       }))
       await Promise.all([serverClosed, ...upgradedClosed])
     }, 'webServer.listen')
+
+    const address = this.server.address() as AddressInfo
+    if (!loopbackAddresses.check(address.address, address.family === 'IPv6' ? 'ipv6' : 'ipv4')) {
+      // Startup warnings must reach stderr even without a console logger exporter.
+      console.warn(`webserver: warning: Binding outside loopback may be unsafe: listening on ${address.address} exposes this server to network clients and may allow remote code execution. Use a loopback address for local-only access.`)
+    }
   }
 
   /** Longest-prefix-wins over the prefix table after an exact-table miss. */

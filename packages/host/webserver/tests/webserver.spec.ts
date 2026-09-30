@@ -11,7 +11,7 @@ import { connect } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { Context, FiberState } from '@deepseek-ai/cordis'
 import Loader from '@deepseek-ai/cordis-plugin-loader'
 import Include from '@deepseek-ai/cordis-plugin-include'
@@ -25,16 +25,17 @@ afterEach(async () => {
   context = undefined
   if (root !== undefined) await rm(root, { recursive: true, force: true })
   root = undefined
+  vi.restoreAllMocks()
 })
 
 /** Write a cordis.yml with one webserver row, then boot it through the real Loader. */
-async function loadComposition(port = 0, gzip = false): Promise<Context> {
+async function loadComposition(port = 0, gzip = false, host = '127.0.0.1'): Promise<Context> {
   root = await mkdtemp(join(tmpdir(), 'dsh-webserver-loader-'))
   const configPath = join(root, 'cordis.yml')
   await writeFile(configPath, [
     "- name: '@deepseek-ai/dsh-host-webserver'",
     '  config:',
-    "    host: '127.0.0.1'",
+    `    host: ${JSON.stringify(host)}`,
     `    port: ${String(port)}`,
     ...(gzip
       ? [
@@ -97,6 +98,31 @@ async function upgrade(port: number, path: string): Promise<ReturnType<typeof co
 }
 
 describe('real Loader composition', () => {
+  it.each([
+    ['127.0.0.1', '127.0.0.1', false],
+    ['localhost', 'localhost', false],
+    ['::1', '[::1]', false],
+    ['::ffff:127.0.0.1', '127.0.0.1', false],
+    ['0.0.0.0', '127.0.0.1', true],
+    ['::', '[::1]', true],
+  ])('listens on %s and warns only for a non-loopback bind', async (host, requestHost, warns) => {
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const loaded = await loadComposition(0, false, host)
+    expect(loaded.webServer.host).toBe(host)
+    const response = await fetch(`http://${requestHost}:${String(loaded.webServer.port)}/`)
+    expect(response.status).toBe(404)
+    await response.text()
+    expect(warning.mock.calls).toEqual(warns
+      ? [[expect.stringContaining('Binding outside loopback may be unsafe')]]
+      : [])
+  })
+
+  it.each(['192.168.1.5', '2001:db8::1', 'harness.internal', '127.0.0.2'])(
+    'accepts %s as a configured bind host', (host) => {
+      expect(HttpServer.Config({ host, port: 0 }).host).toBe(host)
+    },
+  )
+
   it('applies gzip only to eligible socket-backed HTTP responses', { timeout: 60_000 }, async () => {
     expect(HttpServer.Config({ host: '127.0.0.1', port: 0 })).toEqual({
       host: '127.0.0.1',

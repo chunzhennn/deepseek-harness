@@ -75,10 +75,7 @@ export interface WebRuntimeValues {
 /** Environment variable naming the canonical local URL of this Web GUI. */
 const DSH_WEB_URL = 'DSH_WEB_URL' as const
 
-// Display-only mirror of the webserver schema's loopback host: the address the
-// local URL always prints. Not a source of truth — the schema is.
-const LOOPBACK_HOST = '127.0.0.1'
-/** The webserver schema's all-interfaces bind literal. */
+/** IPv4 wildcard bind whose LAN addresses are advertised automatically. */
 const ALL_INTERFACES_HOST = '0.0.0.0'
 
 const BROWSER_OPENER_MODULE = import.meta.resolve('open')
@@ -145,11 +142,15 @@ function webSurfacePrompt(webUrl: string): string {
     + 'Do not start a replacement server unless the user asks; if one is needed, use a managed background job and verify its exact URL.'
 }
 
-/** Resolve the canonical loopback URL from the active Web server. */
+/** Resolve a browser URL for the bind host, using loopback for wildcard binds. */
 function localWebUrl(ctx: Context): string {
-  const port = ctx.get('webServer')?.port
-  if (port === undefined) throw new Error('web-app: webServer service missing while resolving Web runtime')
-  return `http://${LOOPBACK_HOST}:${String(port)}`
+  const server = ctx.get('webServer')
+  if (server?.port === undefined) throw new Error('web-app: webServer service missing while resolving Web runtime')
+  const host = server.host.includes(':') ? `[${server.host}]` : server.host
+  const url = new URL(`http://${host}:${String(server.port)}`)
+  if (url.hostname === '0.0.0.0') url.hostname = '127.0.0.1'
+  if (url.hostname === '[::]') url.hostname = '[::1]'
+  return url.origin
 }
 
 /**
@@ -224,7 +225,7 @@ export const internals: {
  */
 export function apply(ctx: Context, config: Config): void {
   const runtime = resolveLanTrust(ctx.webServer.host, config.trustedHosts)
-  // The loopback URL belongs to this host. Under SSH, the operator reaches it
+  // The bind URL belongs to this host. Under SSH, the operator reaches it
   // through a local forwarding address that this process cannot derive.
   const handoffBrowser = config.openBrowser && !launchedThroughSsh(launchEnvironmentOf(ctx))
   // Release dependent rows only after bind-dependent trust has been sampled once.

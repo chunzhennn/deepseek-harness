@@ -374,15 +374,6 @@ describe.skipIf(!existsSync(dshBin))('dsh BUILT bin (node lib/bin.js, no tsx)', 
       expect(web.stdout).toContain('--port <port>')
       expect(web.stdout).not.toContain('dsh web: http://')
 
-      const wildcardHost = await runBuiltBin(['web', '--host', '0.0.0.0'], {
-        DSH_HOME: home,
-        DSH_TELEMETRY_DISABLED: '1',
-      })
-      expect(wildcardHost.code).toBe(1)
-      expect(wildcardHost.stdout).toBe('')
-      expect(wildcardHost.stderr).toContain('--host 0.0.0.0 is intentionally not supported yet for safety: it would expose remote code execution to the network; use 127.0.0.1 instead')
-      expect(wildcardHost.stderr).not.toContain('dsh web: http://')
-
       const headlessHelp = await runBuiltBin(['headless', '--help'], {
         DSH_HOME: home,
         DSH_TELEMETRY_DISABLED: '1',
@@ -770,6 +761,31 @@ describe.skipIf(!existsSync(dshBin))('dsh BUILT bin (node lib/bin.js, no tsx)', 
       await server.close()
       rmSync(home, { recursive: true, force: true })
       rmSync(project, { recursive: true, force: true })
+    }
+  }, SPAWN_TIMEOUT_MS + 30_000)
+
+  it.each(['0.0.0.0', 'localhost', '::1'])('starts Web on %s with a warning only outside loopback', async (host) => {
+    const home = mkdtempSync(join(tmpdir(), 'dsh-web-bind-'))
+    try {
+      const result = await runBuiltBin(['web', '--host', host, '--port', '0', '--no-open'], {
+        DSH_HOME: home,
+        DSH_BROWSER_OPEN_TEST_EXIT_ON_READY: '1',
+        DEEPSEEK_API_KEY: 'keyless-web-bind',
+        DSH_TELEMETRY_DISABLED: '1',
+        NODE_OPTIONS: `--import=${webReadyExitHook}`,
+      }, home)
+      expect(result.code, result.stderr).toBe(0)
+      const url = new URL(result.stdout.match(/^dsh web: (\S+)/mu)![1]!)
+      expect(url.hostname).toBe(host === '0.0.0.0' ? '127.0.0.1' : host === '::1' ? '[::1]' : host)
+      const warning = result.stderr.match(/Binding outside loopback may be unsafe[^\r\n]*/u)?.[0]
+      if (host === '0.0.0.0') {
+        expect(warning).toBeDefined()
+        await expect(String(warning) + '\n').toMatchFileSnapshot('./expected/web-bind-warning.txt')
+      } else {
+        expect(warning).toBeUndefined()
+      }
+    } finally {
+      rmSync(home, { recursive: true, force: true })
     }
   }, SPAWN_TIMEOUT_MS + 30_000)
 
